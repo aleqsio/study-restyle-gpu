@@ -1,0 +1,23 @@
+{
+  "name": "study-restyle-gpu",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@typegpu/color": "^0.12.1",
+    "@typegpu/kit": "0.0.1",
+    "@typegpu/noise": "^0.12.1",
+    "typegpu": "^0.12.9",
+    "wgpu-matrix": "^3.4.2"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74",
+    "typescript": "npm:tsover@6.0.2",
+    "unplugin-typegpu": "^0.12.7",
+    "vite": "^8.3.5"
+  }
+}

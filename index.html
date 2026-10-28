@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8">
+<title>Study Restyle Planner (WebGPU)</title>
+<meta name="description" content="A WebGPU planner, drawn with TypeGPU Kit, for restyling a small study: drag about 80 pieces into the room, switch styles, paint and lighting, and see a running cost estimate.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Study Restyle Planner">
+<meta property="og:title" content="Study Restyle Planner">
+<meta property="og:description" content="Restyle a 276 × 334 cm study in 3D: drag furniture in from a gallery, change styles, paint and lighting, and keep a running cost estimate.">
+<meta property="og:url" content="https://aleqsio.github.io/study-restyle-gpu/">
+<meta property="og:image" content="https://aleqsio.github.io/study-restyle-gpu/og.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A cut-away 3D view of a mid-century study: walnut desk with a mushroom lamp, string shelves and posters on a sage wall, a mustard armchair, tripod lamp and steel drawers on a rust rug.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Study Restyle Planner">
+<meta name="twitter:description" content="Restyle a small study in 3D: drag furniture in, change styles and lighting, see the cost.">
+<meta name="twitter:image" content="https://aleqsio.github.io/study-restyle-gpu/og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one-screen editor. The room canvas fills the stage; a paper rail beside it
+   (below on phones) has three tabs: Room (whole-room settings), Object (the selected
+   piece) and Add (a gallery you drag pieces from). */
+:root {
+  --bg: #f1eee6;
+  --panel: #faf8f3;
+  --ink: #2a211b;
+  --muted: #6f655c;
+  --line: #ddd5c7;
+  --accent: #2f6f6a;
+  --accent-ink: #ffffff;
+  --mustard: #b07f22;
+  --stage: #d9d4c8;
+  --chip: #ece6da;
+  --thumb: #e6e0d4;
+  --font-display: "Jost", "Futura", "Century Gothic", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1b1714; --panel: #231e1a; --ink: #efe7dc; --muted: #a89d90; --line: #3a322b;
+    --accent: #5fb0a8; --accent-ink: #10201e; --mustard: #e0ad4a; --stage: #12100e; --chip: #2e2722; --thumb: #2b2520;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1b1714; --panel: #231e1a; --ink: #efe7dc; --muted: #a89d90; --line: #3a322b;
+  --accent: #5fb0a8; --accent-ink: #10201e; --mustard: #e0ad4a; --stage: #12100e; --chip: #2e2722; --thumb: #2b2520;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 14px; overflow: hidden; }
+.app { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 430px; grid-template-rows: minmax(0, 1fr); }
+.stage { position: relative; min-width: 0; background: var(--stage); }
+.stage.dropping { outline: 3px dashed var(--accent); outline-offset: -3px; }
+#room { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#room:active { cursor: grabbing; }
+.stage-top {
+  position: absolute; top: 12px; left: max(12px, env(safe-area-inset-left, 0px)); right: 12px;
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center; pointer-events: none;
+}
+.stage-top > * { pointer-events: auto; }
+.seg { display: flex; flex-wrap: wrap; gap: 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 3px; }
+.seg button {
+  font: 500 12.5px/1 var(--font-body); color: var(--ink); background: transparent; border: 0;
+  padding: 7px 12px; border-radius: 999px; cursor: pointer;
+}
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--panel); }
+.compare {
+  font: 500 12.5px/1 var(--font-body); color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 999px; padding: 9px 14px; cursor: pointer; user-select: none;
+  -webkit-user-select: none; touch-action: none;
+}
+.compare.on { background: var(--mustard); border-color: var(--mustard); color: #1d150c; }
+button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint {
+  position: absolute; bottom: 12px; left: max(12px, env(safe-area-inset-left, 0px));
+  font: 12px var(--font-body); color: var(--muted); background: color-mix(in srgb, var(--panel) 85%, transparent);
+  padding: 6px 10px; border-radius: 6px; max-width: calc(100% - 24px);
+}
+.piecebar {
+  position: absolute; right: 12px; bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; max-width: calc(100% - 24px);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 8px;
+}
+.piecebar b { font: 600 13px var(--font-display); padding: 0 6px; }
+.piecebar button, .btn {
+  font: 500 12.5px/1 var(--font-body); color: var(--ink); background: var(--chip); border: 1px solid var(--line);
+  padding: 7px 10px; border-radius: 8px; cursor: pointer;
+}
+.btn.primary, .piecebar button.done { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.btn.danger { color: #b3412b; }
+.btn:disabled { opacity: .45; cursor: default; }
+.loading { position: absolute; inset: 0; display: grid; place-items: center; font: 500 14px var(--font-display); color: var(--muted); letter-spacing: .04em; }
+
+.rail { background: var(--panel); border-left: 1px solid var(--line); min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.rail-top { padding-block: 16px 10px; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); display: grid; gap: 10px; border-bottom: 1px solid var(--line); }
+h1 { font: 600 22px/1.1 var(--font-display); margin: 0; letter-spacing: .01em; }
+.total { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 9px 12px; background: var(--chip); border-radius: 8px; }
+.total span:first-child { font: 500 11px var(--font-body); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.total strong { font: 500 15px var(--font-mono); font-variant-numeric: tabular-nums; }
+.share { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.share span { font-size: 12px; color: var(--muted); }
+.share input { flex: 1 1 100%; min-width: 0; font: 400 11.5px var(--font-mono); color: var(--ink); background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.inspector { flex: 0 1 auto; max-height: 56%; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--chip) 45%, var(--panel)); }
+.library { flex: 1 1 0; }
+.insp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.insp-head h2 { font: 600 15px var(--font-display); text-transform: uppercase; letter-spacing: .1em; margin: 0; }
+.insp-head span { font-size: 12px; color: var(--muted); }
+.colrow { display: grid; grid-template-columns: minmax(0, 1fr) 44px 64px; gap: 8px; align-items: center; padding: 3px 6px; }
+.colrow label { font: 500 13px/1.3 var(--font-body); }
+.wall-swatch { width: 56px; height: 56px; border-radius: 8px; border: 1px solid var(--line); flex: none; }
+.chip .dot, .objrow .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.15); }
+.colrow input[type="color"] { width: 44px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer; }
+.colrow .price { font: 400 11.5px var(--font-mono); color: var(--muted); text-align: right; }
+.colrow .btn { padding: 6px 8px; }
+.panel { overflow-y: auto; padding-block: 14px 28px; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); display: grid; align-content: start; gap: 20px; flex: 1; min-height: 0; }
+
+.block { display: grid; gap: 9px; }
+.block-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.block-head h2 { font: 600 13px var(--font-display); text-transform: uppercase; letter-spacing: .1em; margin: 0; }
+.block-head span { font-size: 12px; color: var(--muted); }
+.note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.choice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
+.choice {
+  display: grid; gap: 6px; text-align: left; padding: 9px 10px; border-radius: 8px; cursor: pointer;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line); font: 500 13px/1.25 var(--font-body);
+}
+.choice:hover { background: var(--chip); }
+.choice[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.choice small { font: 400 11.5px var(--font-mono); color: var(--muted); }
+.swatches { display: flex; gap: 3px; }
+.swatches i { width: 16px; height: 16px; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--ink) 15%, transparent); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  font: 500 12.5px/1.2 var(--font-body); padding: 6px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
+.chip:hover { background: var(--chip); }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.chip small { font: 400 11px var(--font-mono); opacity: .75; margin-left: 4px; }
+.row-label { margin: 2px 0 0; font: 500 11px var(--font-body); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); display: flex; justify-content: space-between; }
+.row-label span { text-transform: none; letter-spacing: 0; font-family: var(--font-mono); }
+.xlist { display: grid; gap: 2px; }
+.xrow { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 2px 8px; padding: 6px 6px; border-radius: 6px; cursor: pointer; align-items: start; }
+.xrow:hover { background: var(--chip); }
+.xrow input { margin: 2px 0 0; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.xrow .name { font: 500 13px/1.3 var(--font-body); }
+.xrow .price { font: 400 11.5px/1.4 var(--font-mono); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.objlist { display: grid; gap: 2px; }
+.objrow { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; background: none; color: var(--ink); text-align: left; font: inherit; }
+.objrow:hover { background: var(--chip); }
+.objrow[aria-current="true"] { border-color: var(--accent); }
+.objrow img, .objrow .ph { width: 34px; height: 26px; object-fit: cover; border-radius: 4px; background: var(--thumb); }
+.objrow .name { font: 500 13px/1.3 var(--font-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.objrow .price { font: 400 11.5px var(--font-mono); color: var(--muted); white-space: nowrap; }
+.obj-head { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; align-items: center; }
+.obj-head img, .obj-head .ph { width: 96px; height: 72px; object-fit: cover; border-radius: 8px; background: var(--thumb); }
+.obj-head h2 { font: 600 19px/1.15 var(--font-display); margin: 0 0 4px; text-wrap: balance; }
+.obj-head p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.obj-head strong { font: 500 13px var(--font-mono); }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.gallery-cat { display: grid; gap: 8px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.card {
+  display: grid; gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  cursor: grab; text-align: left; color: var(--ink); font: inherit; user-select: none; -webkit-user-select: none;
+}
+.card:hover { border-color: var(--accent); }
+.card:active { cursor: grabbing; }
+.card img, .card .ph { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: var(--thumb); display: block; }
+.card .name { font: 500 12.5px/1.25 var(--font-body); }
+.card small { font: 400 11px var(--font-mono); color: var(--muted); }
+.empty { padding: 18px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.foot { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 58vh auto; height: auto; min-height: 100%; }
+  .rail { border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+  .panel { overflow: visible; }
+  .inspector, .library { flex: none; max-height: none; } /* stacked: each section takes its content's height */
+  .hint { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="stage" id="stage">
+    <canvas id="room" aria-label="3D model of the study. Drag to orbit, scroll to zoom, click a piece to edit it."></canvas>
+    <div class="loading" id="loading">Loading the room…</div>
+    <div class="stage-top">
+      <div class="seg" id="views" role="group" aria-label="Camera view">
+        <button data-view="doll" aria-pressed="true">Dollhouse</button>
+        <button data-view="photo" aria-pressed="false">Photo angle</button>
+        <button data-view="door" aria-pressed="false">Door corner</button>
+        <button data-view="opposite" aria-pressed="false">Opposite wall</button>
+        <button data-view="seated" aria-pressed="false">Seated</button>
+        <button data-view="standing" aria-pressed="false">Standing</button>
+        <button data-view="top" aria-pressed="false">Plan</button>
+      </div>
+      <div class="seg" id="scenes" role="group" aria-label="Smart bulb scene">
+        <button data-scene="evening" aria-pressed="false">Evening 2200K</button>
+        <button data-scene="everyday" aria-pressed="true">Everyday 2700K</button>
+        <button data-scene="focus" aria-pressed="false">Focus 4000K</button>
+      </div>
+      <button class="compare" id="compare">Hold to see the room today</button>
+    </div>
+    <div class="hint" id="hint">Drag to orbit · scroll to zoom · click a piece to move or edit it</div>
+    <div class="piecebar" id="piecebar" hidden role="toolbar" aria-label="Selected piece">
+      <b id="piece-name"></b>
+      <button data-rot="-15" title="Turn left (Q)">⟲ 15°</button>
+      <button data-rot="15" title="Turn right (E)">⟳ 15°</button>
+      <button id="bar-dup" title="Duplicate (Ctrl+D)">Duplicate</button>
+      <button id="bar-del" title="Delete (Del)">Delete</button>
+      <button id="bar-done" class="done">Done</button>
+    </div>
+  </div>
+
+  <aside class="rail">
+    <div class="rail-top">
+      <h1>Study restyle</h1>
+      <div class="total"><span>Estimated spend</span><strong id="total">0 zł</strong></div>
+      <div class="share">
+        <button class="btn" id="undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button class="btn" id="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+        <button class="btn" id="copy-link">Copy link to this setup</button>
+        <span id="copy-status" role="status"></span>
+        <input id="share-url" readonly hidden aria-label="Link to this setup">
+      </div>
+    </div>
+    <section class="panel inspector" id="inspector" aria-label="Settings"></section>
+    <div class="panel library" id="library">
+      <section class="block" id="objects" aria-label="In the room"></section>
+      <section class="block" id="gallery" aria-label="Add pieces"></section>
+      <p class="foot">Everything is modelled cheaply from simple shapes, to scale. Prices are rough Polish street prices.</p>
+    </div>
+  </aside>
+</div>
+
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>
