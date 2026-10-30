@@ -16,13 +16,15 @@ export interface Placement {
   hideChairBack?: boolean;
   /** Linear lamp colour, or null for the lamps' own. */
   tint: [number, number, number] | null;
+  /** How far each chunk has faded in, 0 to 1; 1 when left out. */
+  fadeOf?: (c: Chunk) => number;
 }
 
 interface Placed {
   template: Template;
   placement: Placement;
   /** Chunks shown, with their row transforms. */
-  rows: Map<number, { position: V3; yaw: number; scale: [number, number, number] }>;
+  rows: Map<number, { position: V3; yaw: number; scale: [number, number, number]; fade: number }>;
 }
 
 export interface Box { min: V3; max: V3 }
@@ -80,7 +82,8 @@ export function createPieces(world: World, gpu: Gpu) {
     const rotation: [number, number, number, number] = [0, Math.sin(p.yaw / 2), 0, Math.cos(p.yaw / 2)];
     for (const c of template.chunks) {
       const rowKey = `${key}#${c.id}`;
-      if (!chunkShows(c, p)) {
+      const fade = p.fadeOf ? p.fadeOf(c) : 1;
+      if (!chunkShows(c, p) || fade <= 0.001) {
         gpu.place(rowKey, c, null);
         entry.rows.delete(c.id);
         continue;
@@ -91,8 +94,8 @@ export function createPieces(world: World, gpu: Gpu) {
       const scale: [number, number, number] = [1, 1, k];
       const tint: [number, number, number, number] = p.tint ? [...p.tint, 1] : [0, 0, 0, 0];
       const op = c.set === 'glass' ? glassOpacityOf(c) : undefined;
-      gpu.place(rowKey, c, { position: position.toArray(), rotation, scale, tint, ...(op !== undefined ? { opacity: op } : {}) });
-      entry.rows.set(c.id, { position, yaw: p.yaw, scale });
+      gpu.place(rowKey, c, { position: position.toArray(), rotation, scale, tint, fade, ...(op !== undefined ? { opacity: op * fade } : {}) });
+      entry.rows.set(c.id, { position, yaw: p.yaw, scale, fade });
     }
     // Lamps
     for (const k of [...lamps.keys()]) if (k.startsWith(key + '@')) lamps.delete(k);
@@ -133,6 +136,7 @@ export function createPieces(world: World, gpu: Gpu) {
     let best: { t: number; key: string; chunk: Chunk; mat: number; point: V3; normal: V3 } | null = null;
     for (const [key, entry] of placed) {
       for (const [id, row] of entry.rows) {
+        if (row.fade < 0.5) continue; // a wall fading out doesn't catch clicks
         const c = world.chunks[id]!;
         // into the chunk's space: undo position, turn, then scale
         const o = ray.origin.clone().sub(row.position).rotateY(-row.yaw);
@@ -151,7 +155,7 @@ export function createPieces(world: World, gpu: Gpu) {
   }
 
   // ---------------------------------------------------------------- bounds
-  function boxOf(entry: Placed, chunks: Iterable<[number, { position: V3; yaw: number; scale: [number, number, number] }]>, part?: (c: Chunk) => { min: number[]; max: number[] } | null): Box | null {
+  function boxOf(entry: Placed, chunks: Iterable<[number, { position: V3; yaw: number; scale: [number, number, number]; fade: number }]>, part?: (c: Chunk) => { min: number[]; max: number[] } | null): Box | null {
     const min = new V3(Infinity, Infinity, Infinity), max = new V3(-Infinity, -Infinity, -Infinity);
     let any = false;
     for (const [id, row] of chunks) {

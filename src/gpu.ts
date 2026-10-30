@@ -37,6 +37,8 @@ export interface Row {
   scale: [number, number, number];
   /** Lamp colour for glowing materials, linear, w = 1 when set. */
   tint: [number, number, number, number];
+  /** 1 drawn, 0 gone; walls fade between. */
+  fade?: number;
   opacity?: number;
 }
 
@@ -114,12 +116,14 @@ export async function createGpu(canvas: HTMLCanvasElement, world: World, specs: 
 
   // ---------------------------------------------------------------- the kind
   const Piece = instances.define('Piece', {
-    host: { tint: d.vec4f },
+    host: { tint: d.vec4f, fade: d.f32 },
     carry: (vertexIndex) => {
       'use gpu';
       return d.vec4f(d.f32(pool.extra.mat(vertexIndex)), 0, 0, 0);
     },
-    material: (point, piece, base, carried) => {
+    // A surface rather than a material, so a wall can fade: with 4x MSAA, coverage keeps a share
+    // of each pixel's samples, and a little noise breaks the steps up. Depth stays right.
+    surface: (point, piece, base, carried) => {
       'use gpu';
       const m = mats.$[d.u32(carried.x + 0.5)]!;
       // Sampled before any branch: WGSL wants textureSample in uniform control flow
@@ -135,7 +139,16 @@ export async function createGpu(canvas: HTMLCanvasElement, world: World, specs: 
         emission = piece.tint.xyz * m.glowStrength;
         color = std.mix(piece.tint.xyz, d.vec3f(1), 0.6);
       }
-      return shading.Material({ color, roughness: m.roughness, metallic: m.metallic, emission });
+      let coverage = d.f32(1);
+      if (piece.fade < 0.999) {
+        const n = std.fract(std.sin(std.dot(std.floor(point.position * 160), d.vec3f(12.9898, 78.233, 37.719))) * 43758.5453);
+        coverage = std.clamp(piece.fade + (n - 0.5) * 0.35, 0, 1);
+      }
+      return instances.Surface({
+        point,
+        material: shading.Material({ color, roughness: m.roughness, metallic: m.metallic, emission }),
+        coverage,
+      });
     },
   });
 
@@ -168,7 +181,8 @@ export async function createGpu(canvas: HTMLCanvasElement, world: World, specs: 
     depth: { format: 'depth24plus', samples: SAMPLES },
     hdr: { format: HDR, sampled: true },
   });
-  const background = [0.6, 0.55, 0.48, 1];
+  // An object, not an array: passes copy an array once, but keep reading an object's fields
+  const background = { r: 0.6, g: 0.55, b: 0.48, a: 1 };
   const scene = passes
     .create(root, screen, { color: passes.color, depth: passes.depth }, { resolve: { color: 'hdr' }, clear: background })
     .pipe(view.inject());
@@ -212,7 +226,7 @@ export async function createGpu(canvas: HTMLCanvasElement, world: World, specs: 
         if (had) { sets[had.set].remove(had.id); rows.delete(key); }
         return;
       }
-      const fields = { position: row.position, rotation: row.rotation, scale: row.scale, tint: row.tint, ...(row.opacity !== undefined ? { opacity: row.opacity } : {}) };
+      const fields = { position: row.position, rotation: row.rotation, scale: row.scale, tint: row.tint, fade: row.fade ?? 1, ...(row.opacity !== undefined ? { opacity: row.opacity } : {}) };
       if (had) sets[had.set].write(had.id, fields as any);
       else rows.set(key, { set: chunk.set, id: sets[chunk.set].add(meshOf.get(chunk.id)!, fields as any) });
     },

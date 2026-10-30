@@ -558,7 +558,8 @@ start().catch((err) => {
 function setBackground() {
   if (!gpu) return;
   const c = getComputedStyle(document.documentElement).getPropertyValue("--stage").trim() || "#d9d4c8";
-  hexToLinear(c).forEach((v, i) => { gpu.background[i] = beforeTone(v); });
+  const [r, g, b] = hexToLinear(c).map(beforeTone);
+  Object.assign(gpu.background, { r, g, b });
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", setBackground);
 new MutationObserver(setBackground).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
@@ -646,6 +647,19 @@ function wallHex(name) {
 }
 // Walls between the eye and the room are cut away
 let roomState = null, hiddenSides = "";
+// How far each wall has faded in; walls ease out of the way as the eye passes them
+const wallFade = { S: 1, N: 1, W: 1, E: 1, C: 1 };
+const FADE_TIME = 0.35;
+function stepWalls(dt) {
+  let moved = false;
+  for (const side of Object.keys(wallFade)) {
+    const goal = hiddenSides.includes(side) ? 0 : 1, now = wallFade[side];
+    if (now === goal) continue;
+    wallFade[side] = goal > now ? Math.min(goal, now + dt / FADE_TIME) : Math.max(goal, now - dt / FADE_TIME);
+    moved = true;
+  }
+  return moved;
+}
 function cutaway() {
   const p = rig.position;
   const bx = p.x, by = -p.z, bz = p.y, m = 0.02;
@@ -655,8 +669,9 @@ function placeRoom() {
   const s = roomState;
   if (!s) return;
   const tags = new Set([`light:${s.light}`, `paint:${s.paint}`, ...(s.finish === "rail" ? ["wf:rail"] : []), ...[...s.room].map((k) => `x:${k}`)]);
-  const shows = (t) => (!t.opt || tags.has(t.opt)) && (!t.slotBase || t.slotBase !== "light" || s.light === "today") && (!t.hideWith || !tags.has(t.hideWith)) && (!t.side || !hiddenSides.includes(t.side));
-  pieces.place("ROOM", world.room, { position: new V3(), yaw: 0, shows, tint: s.lamp ? hexToLinear(s.lamp) : null });
+  const shows = (t) => (!t.opt || tags.has(t.opt)) && (!t.slotBase || t.slotBase !== "light" || s.light === "today") && (!t.hideWith || !tags.has(t.hideWith));
+  const fadeOf = (c) => { const t = c.chain.find((x) => x.side); return t ? wallFade[t.side] ?? 1 : 1; };
+  pieces.place("ROOM", world.room, { position: new V3(), yaw: 0, shows, fadeOf, tint: s.lamp ? hexToLinear(s.lamp) : null });
 }
 function applyRoom(s) {
   roomState = s;
@@ -1234,7 +1249,9 @@ function resize() {
 new ResizeObserver(resize).observe(canvas.parentElement);
 resize();
 const ease = (t) => 1 - Math.pow(1 - t, 3);
-function frame() {
+let firstFrame = true;
+function frame(dt) {
+  if (firstFrame) { firstFrame = false; for (const k of Object.keys(wallFade)) wallFade[k] = cutaway().includes(k) ? 0 : 1; }
   if (tween) {
     const t = Math.min(1, (performance.now() - tween.t0) / tween.dur), k = ease(t);
     rig.position.lerpVectors(tween.from.pos, tween.to.pos, k);
@@ -1247,7 +1264,9 @@ function frame() {
     }
   } else rig.update();
   const sides = cutaway();
-  if (sides !== hiddenSides) { hiddenSides = sides; placeRoom(); pieces.flushLights(); }
+  const turned = sides !== hiddenSides;
+  hiddenSides = sides;
+  if (stepWalls(Math.min(dt, 0.05)) || turned) { placeRoom(); if (turned) pieces.flushLights(); }
   gpu.setOverlay(overlayLines());
   gpu.view.write(rig.viewMatrix(), rig.projectionMatrix());
 }
